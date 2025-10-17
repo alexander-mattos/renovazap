@@ -1,0 +1,113 @@
+// This is your Prisma schema file
+generator client {
+  provider      = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      String   @default("user")
+  refreshToken String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  policies  Policy[]
+}
+
+model InsuranceType {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  policies    Policy[]
+}
+
+model InsuranceProvider {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  policies    Policy[]
+}
+
+model Policy {
+  id                  String            @id @default(uuid())
+  policyNumber        String            @unique
+  policyholderName    String
+  policyholderCpf     String?
+  policyholderPhone   String?
+  policyholderEmail   String?
+  startDate           DateTime
+  endDate             DateTime
+  premium             Float
+  coverageDetails     String            @db.Text
+  assetType           String?
+  assetDetails        String?           @db.Text
+  documentPath        String?
+  insuranceTypeId     String
+  insuranceType       InsuranceType     @relation(fields: [insuranceTypeId], references: [id])
+  insuranceProviderId String
+  insuranceProvider   InsuranceProvider @relation(fields: [insuranceProviderId], references: [id])
+  userId              String
+  user                User              @relation(fields: [userId], references: [id])
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  notifications       Notification[]
+  renewed             Boolean           @default(false)
+  renewalDate         DateTime?
+
+  @@index([policyholderCpf])
+  @@index([policyholderEmail])
+}
+
+model Notification {
+  id           String    @id @default(uuid())
+  policyId     String
+  policy       Policy    @relation(fields: [policyId], references: [id])
+  message      String    @db.Text
+  status       String    @default("pending") // pending, sent, failed
+  scheduledFor DateTime
+  sentAt       DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  logs         MessageLog[]
+}
+
+model MessageTemplate {
+  id               String   @id @default(uuid())
+  name             String
+  content          String   @db.Text
+  daysBeforeExpiry Int
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model WhatsAppSession {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  status    String   @default("close") // close, open
+  qrCode    String?  @db.Text
+  userId    String?
+  connectedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model MessageLog {
+  id             String   @id @default(uuid())
+  notificationId String
+  notification   Notification @relation(fields: [notificationId], references: [id])
+  status         String   // attempt, sent, failed
+  attemptAt      DateTime @default(now())
+  details        String?  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
