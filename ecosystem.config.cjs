@@ -1,8 +1,10 @@
 module.exports = {
   apps: [
     {
-      name: 'renovazap',
-      script: './server/index.js',
+      name: 'renovazap-backend',
+      script: 'npx',
+      args: 'tsx server/index.ts',
+      interpreter: 'node',
       instances: 1,
       exec_mode: 'fork',
       env: {

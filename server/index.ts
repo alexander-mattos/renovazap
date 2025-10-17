@@ -24,6 +24,11 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Health check (public route - must be before auth middleware)
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 // Routes
 app.use('/api/auth', authRouter);
 app.use('/api/policies', authenticateToken, policyRouter);
@@ -36,10 +41,6 @@ app.use('/api/notifications', authenticateToken, notificationsRouter);
 // Proxy endpoints to external Baileys API (mounted at root for compatibility with client paths)
 // Place the proxy after the /api routes so it doesn't intercept /api/* endpoints
 app.use('/', authenticateToken, baileysProxyRouter);
-// Health check
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
-});
 
 // Start server
 app.listen(PORT, () => {
