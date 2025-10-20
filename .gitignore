@@ -30,3 +30,5 @@ uploads/
 prisma/migrations.bkp
 prisma/seed.bkp
 server/scripts
+start.cjs
+ecosystem.*
