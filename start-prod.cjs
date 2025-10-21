@@ -21,7 +21,7 @@ const frontend = spawn('npm', ['run', 'preview'], {
     env: {
         ...process.env,
         NODE_ENV: 'production',
-        PORT: 5173
+        PORT: 4173
     }
 });
 
