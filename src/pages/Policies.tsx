@@ -47,7 +47,7 @@ const Policies: React.FC = () => {
   const [sortDirection, setSortDirection] = useState('asc');
   
   // Pagination handled server-side
-  const { items, total, page, pageSize, setParams, setPage, fetchPage, loading } = usePaginatedFetch<Policy>('/policies', undefined, 1, 10);
+  const { items, total, page, pageSize, setParams, setPage, fetchPage, loading } = usePaginatedFetch<Policy>('/policies', undefined, 1, 8);
 
   // Insurance types and providers for filters
   const [insuranceTypes, setInsuranceTypes] = useState<{ id: string; name: string }[]>([]);
@@ -63,7 +63,7 @@ const Policies: React.FC = () => {
         const providersResponse = await api.get('/insurance-providers');
         setInsuranceProviders(Array.isArray(providersResponse.data) ? providersResponse.data : providersResponse.data.items || []);
         // Fetch first page of policies via hook
-        await fetchPage(1, 10, {} as any);
+        await fetchPage(1, 8, {} as any);
       } catch (error) {
         console.error('Error fetching data:', error);
       }
@@ -125,7 +125,7 @@ const Policies: React.FC = () => {
   // Server-side pagination values
   const currentItems = (items || []) as Policy[];
   const totalPages = total ? Math.ceil(total / pageSize) : 0;
-  const paginate = (pageNumber: number) => setPage(pageNumber);
+  const paginate = (pageNumber: number) => { setPage(pageNumber); fetchPage(pageNumber, pageSize); };
 
   const clearFilters = () => {
     setFilters({

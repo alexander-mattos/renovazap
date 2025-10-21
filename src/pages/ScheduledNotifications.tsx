@@ -12,7 +12,7 @@ interface NotificationRow {
 }
 
 export default function ScheduledNotifications() {
-  const { items: notifications, total, page, pageSize, setPage, setPageSize, loading, fetchPage } = usePaginatedFetch<NotificationRow>('/notifications', undefined, 1, 20)
+  const { items: notifications, total, page, pageSize, setPage, setPageSize, loading, fetchPage } = usePaginatedFetch<NotificationRow>('/notifications', undefined, 1, 8)
   const [editing, setEditing] = useState<NotificationRow | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null)
@@ -109,13 +109,13 @@ export default function ScheduledNotifications() {
         <div className="flex items-center justify-between mt-4">
           <div className="text-sm text-gray-600">Total: {total}</div>
           <div className="flex items-center gap-2">
-            <button disabled={page <= 1} onClick={() => { const np = Math.max(1, page-1); setPage(np); fetchPage(); }} className="px-3 py-1 border rounded disabled:opacity-50">Anterior</button>
+            <button disabled={page <= 1} onClick={() => { const np = Math.max(1, page-1); setPage(np); fetchPage(np, pageSize); }} className="px-3 py-1 border rounded disabled:opacity-50">Anterior</button>
             <div>Página {page}</div>
-            <button disabled={total !== null && page * pageSize >= total} onClick={() => { const np = page+1; setPage(np); fetchPage(); }} className="px-3 py-1 border rounded disabled:opacity-50">Próxima</button>
-            <select value={pageSize} onChange={(e) => { const s = parseInt(e.target.value, 10); setPageSize(s); setPage(1); fetchPage(); }} className="ml-4 border rounded px-2 py-1">
-              <option value={10}>10</option>
-              <option value={20}>20</option>
-              <option value={50}>50</option>
+            <button disabled={total !== null && page * pageSize >= total} onClick={() => { const np = page+1; setPage(np); fetchPage(np, pageSize); }} className="px-3 py-1 border rounded disabled:opacity-50">Próxima</button>
+            <select value={pageSize} onChange={(e) => { const s = parseInt(e.target.value, 10); setPageSize(s); setPage(1); fetchPage(1, s); }} className="ml-4 border rounded px-2 py-1">
+              <option value={8}>8</option>
+              <option value={16}>16</option>
+              <option value={32}>32</option>
             </select>
           </div>
         </div>

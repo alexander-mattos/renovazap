@@ -38,10 +38,19 @@ const Dashboard: React.FC = () => {
           console.warn('Failed to load renewal rate', err)
         }
 
+        // Fetch notification stats
+        let activeNotifications = 0
+        try {
+          const notifStatsResponse = await api.get('/notifications/stats')
+          activeNotifications = notifStatsResponse.data.pending || 0
+        } catch (err) {
+          console.warn('Failed to load notification stats', err)
+        }
+
         setStats({
           totalPolicies: policiesResponse.data.length,
           expiringPolicies: expiringResponse.data.length,
-          activeNotifications: 12, // Placeholder
+          activeNotifications,
           totalUsers: 8, // Placeholder
           renewalRate
         });

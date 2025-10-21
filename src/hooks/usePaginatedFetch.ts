@@ -3,7 +3,7 @@ import api from '../services/api';
 
 type Params = Record<string, any> | undefined;
 
-export default function usePaginatedFetch<T>(path: string, initialParams?: Params, initialPage = 1, initialPageSize = 10) {
+export default function usePaginatedFetch<T>(path: string, initialParams?: Params, initialPage = 1, initialPageSize = 8) {
   const [items, setItems] = useState<T[]>([]);
   const [total, setTotal] = useState<number | null>(null);
   const [page, setPage] = useState(initialPage);
