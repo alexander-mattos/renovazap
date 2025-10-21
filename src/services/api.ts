@@ -1,8 +1,11 @@
 import axios from 'axios';
 
-const api = axios.create({
-  baseURL: 'http://localhost:3001/api',
+const API_BASE_URL = import.meta.env.VITE_API_URL 
+  ? `${import.meta.env.VITE_API_URL}/api`
+  : 'http://localhost:3001/api';
 
+const api = axios.create({
+  baseURL: API_BASE_URL,
 });
 
 // Add request interceptor for authentication
@@ -27,7 +30,7 @@ api.interceptors.response.use(
       originalRequest._retry = true;
       const refreshToken = localStorage.getItem('refreshToken');
       if (refreshToken) {
-        return axios.post('http://localhost:3001/api/auth/refresh', { refreshToken })
+        return axios.post(`${API_BASE_URL}/auth/refresh`, { refreshToken })
           .then((res) => {
             const { token, refreshToken: newRefresh } = res.data;
             localStorage.setItem('token', token);
