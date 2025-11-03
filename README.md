@@ -32,7 +32,7 @@ Sistema completo para gerenciamento de apólices de seguro com notificações au
 - **JWT** para autenticação
 - **Multer** para upload de arquivos
 - **node-cron** para tarefas agendadas
-- **whatsapp-web.js** para integração WhatsApp
+- **WAHA (WhatsApp HTTP API)** como provedor de integração WhatsApp
 
 ## 📋 Pré-requisitos
 
@@ -116,9 +116,12 @@ npm start
 
 ## 📱 Configuração do WhatsApp
 
+Antes de utilizar, configure o arquivo `.env` com as variáveis `WAHA_BASE_URL` e `WAHA_API_KEY`, apontando para o servidor WAHA responsável pela sessão "default".
+
 1. Acesse a página de configuração do WhatsApp no sistema
-2. Escaneie o QR Code com seu WhatsApp
-3. A sessão será mantida para envios automáticos
+2. Clique em **Iniciar sessão** para gerar o QR Code a partir do WAHA
+3. Escaneie o QR Code ou solicite um código de pareamento diretamente na página
+4. Após a autenticação, o status mudará para **Conectado** e os envios automáticos estarão disponíveis
 
 ## 👤 Usuário Padrão
 
@@ -206,6 +209,6 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 
 ## 🙏 Agradecimentos
 
-- Equipe do Baileys pela API do WhatsApp
+- Equipe do WAHA (WhatsApp HTTP API)
 - Comunidade Prisma pelo excelente ORM
 - Vercel pelo Next.js

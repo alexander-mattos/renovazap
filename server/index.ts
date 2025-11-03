@@ -5,7 +5,6 @@ import { initCronJobs } from './services/cronService';
 import { authRouter } from './routes/auth';
 import { policyRouter } from './routes/policy';
 import { whatsappRouter } from './routes/whatsapp';
-import { baileysProxyRouter } from './routes/baileysProxy';
 import { templateRouter } from './routes/template';
 import { insuranceTypeRouter } from './routes/insuranceType';
 import { insuranceProviderRouter } from './routes/insuranceProvider';
@@ -38,9 +37,6 @@ app.use('/api/insurance-types', authenticateToken, insuranceTypeRouter);
 app.use('/api/insurance-providers', authenticateToken, insuranceProviderRouter);
 app.use('/api/message-templates', authenticateToken, messageTemplatesRouter);
 app.use('/api/notifications', authenticateToken, notificationsRouter);
-// Proxy endpoints to external Baileys API (mounted at root for compatibility with client paths)
-// Place the proxy after the /api routes so it doesn't intercept /api/* endpoints
-app.use('/', authenticateToken, baileysProxyRouter);
 
 // Start server
 app.listen(PORT, () => {

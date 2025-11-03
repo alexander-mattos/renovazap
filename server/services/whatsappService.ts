@@ -1,183 +1,291 @@
-import { Boom } from '@hapi/boom';
-import {
-  makeWASocket,
-  DisconnectReason,
-  useMultiFileAuthState,
-  isJidUser
-} from 'baileys';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import fs from 'fs';
-import QRCode from 'qrcode';
+import axios, { AxiosError } from 'axios';
 import prisma from '../../src/lib/prisma';
 
-const sessions = new Map();
+const SESSION_NAME = 'default';
+const DEFAULT_BASE_URL = 'http://localhost:3000/api';
 
-// Initialize WhatsApp connection
-export const initWhatsApp = async (
-  sessionId: string,
-  sessionName: string
-): Promise<{ qrCode: string; success: boolean }> => {
-  try {
-  // Resolve session directory in ESM-safe way
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
-  // Create session directory if it doesn't exist
-  const sessionDir = path.join(__dirname, '../../whatsapp-sessions', sessionName);
-    if (!fs.existsSync(sessionDir)) {
-      fs.mkdirSync(sessionDir, { recursive: true });
+const RAW_BASE_URL = process.env.WAHA_BASE_URL || DEFAULT_BASE_URL;
+const NORMALIZED_BASE = /\/api\/?$/.test(RAW_BASE_URL)
+  ? RAW_BASE_URL
+  : `${RAW_BASE_URL.replace(/\/+$/, '')}/api`;
+const WAHA_BASE_URL = NORMALIZED_BASE.replace(/\/+$/, '');
+const WAHA_API_KEY = process.env.WAHA_API_KEY;
+
+const wahaClient = axios.create({
+  baseURL: WAHA_BASE_URL,
+  timeout: 15000,
+});
+
+wahaClient.interceptors.request.use((config) => {
+  const method = (config.method || 'get').toUpperCase();
+  const finalUrl = `${config.baseURL ?? WAHA_BASE_URL}${config.url ?? ''}`;
+  console.debug('[WAHA] Request', method, finalUrl);
+  return config;
+});
+
+wahaClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const axiosErr = error as AxiosError;
+    const method = axiosErr.config?.method?.toUpperCase();
+    const url = axiosErr.config?.url ? `${axiosErr.config?.baseURL ?? WAHA_BASE_URL}${axiosErr.config.url}` : undefined;
+    const status = axiosErr.response?.status;
+    if (method && url) {
+      console.error('[WAHA] Response error', method, url, status, axiosErr.response?.data ?? axiosErr.message);
     }
+    return Promise.reject(error);
+  }
+);
 
-    // Load auth state
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+if (WAHA_API_KEY) {
+  wahaClient.defaults.headers.common['X-Api-Key'] = WAHA_API_KEY;
+}
 
-    // Create WhatsApp socket
-    const sock = makeWASocket({
-      auth: state,
-      printQRInTerminal: false,
+if (!WAHA_API_KEY) {
+  console.warn('WAHA_API_KEY não configurado; as requisições WAHA serão enviadas sem autenticação.');
+}
+
+type WahaStatus = 'STOPPED' | 'STARTING' | 'SCAN_QR_CODE' | 'WORKING' | 'FAILED' | string | null | undefined;
+type SessionStatus = 'connected' | 'connecting' | 'scan_qr_code' | 'disconnected' | 'failed';
+
+interface SessionSnapshot {
+  status: SessionStatus;
+  rawStatus?: WahaStatus;
+  qrCode: string | null;
+}
+
+const normalizeStatus = (status: WahaStatus): SessionStatus => {
+  switch (status) {
+    case 'WORKING':
+      return 'connected';
+    case 'SCAN_QR_CODE':
+      return 'scan_qr_code';
+    case 'STARTING':
+      return 'connecting';
+    case 'FAILED':
+      return 'failed';
+    default:
+      return 'disconnected';
+  }
+};
+
+const ensureSessionRow = async () => {
+  const existing = await prisma.whatsAppSession.findUnique({ where: { name: SESSION_NAME } });
+  if (!existing) {
+    await prisma.whatsAppSession.create({ data: { name: SESSION_NAME, status: 'disconnected' } });
+  }
+};
+
+const persistSnapshot = async (snapshot: SessionSnapshot) => {
+  await ensureSessionRow();
+  const data: Record<string, any> = {
+    status: snapshot.status,
+    qrCode: snapshot.qrCode,
+  };
+
+  if (snapshot.status === 'connected') {
+    data.connectedAt = new Date();
+  }
+  if (snapshot.status === 'disconnected' || snapshot.status === 'failed') {
+    data.connectedAt = null;
+  }
+
+  await prisma.whatsAppSession.update({
+    where: { name: SESSION_NAME },
+    data,
+  });
+};
+
+const createRemoteSession = async () => {
+  try {
+    await wahaClient.post('/sessions', { name: SESSION_NAME, start: true });
+  } catch (err) {
+    const axiosErr = err as AxiosError;
+    const status = axiosErr.response?.status;
+    if (!status || (status !== 400 && status !== 409)) {
+      throw err;
+    }
+  }
+};
+
+const startRemoteSession = async () => {
+  try {
+    await wahaClient.post(`/sessions/${SESSION_NAME}/start`);
+  } catch (err) {
+    const axiosErr = err as AxiosError;
+    const status = axiosErr.response?.status;
+    if (status && status !== 200 && status !== 409 && status !== 202) {
+      throw err;
+    }
+  }
+};
+
+const fetchRemoteSession = async (): Promise<WahaStatus> => {
+  try {
+    const response = await wahaClient.get(`/sessions/${SESSION_NAME}`);
+    return response.data?.status ?? null;
+  } catch (err) {
+    const axiosErr = err as AxiosError;
+    const status = axiosErr.response?.status;
+    if (status === 404 || status === 400) {
+      console.warn('WAHA session not found when fetching status. Consider running init.', axiosErr.response?.data);
+      return null;
+    }
+    throw err;
+  }
+};
+
+const fetchQrCode = async (): Promise<string | null> => {
+  try {
+    const response = await wahaClient.get(`/${SESSION_NAME}/auth/qr`, {
+      params: { format: 'raw' },
     });
+    if (typeof response.data === 'string') {
+      return response.data;
+    }
+    return response.data?.value || null;
+  } catch (err) {
+    const axiosErr = err as AxiosError;
+    const status = axiosErr.response?.status;
+    if (status === 404 || status === 400) {
+      return null;
+    }
+    throw err;
+  }
+};
 
-    // Save session (store is optional with current baileys build; keep a lightweight placeholder)
-    const storePlaceholder = {
-      // minimal API used by other parts of the app if any
-      read: () => {},
-      write: () => {},
-      bind: () => {},
+export const initWhatsApp = async (): Promise<SessionSnapshot> => {
+  await ensureSessionRow();
+  await createRemoteSession();
+  await startRemoteSession();
+
+  const remoteStatus = await fetchRemoteSession();
+  const normalized = normalizeStatus(remoteStatus);
+  const qrCode = normalized === 'scan_qr_code' ? await fetchQrCode() : null;
+
+  const snapshot: SessionSnapshot = {
+    status: normalized,
+    rawStatus: remoteStatus,
+    qrCode,
+  };
+
+  await persistSnapshot(snapshot);
+
+  return snapshot;
+};
+
+export const getSessionStatus = async (): Promise<SessionSnapshot> => {
+  await ensureSessionRow();
+  try {
+    const remoteStatus = await fetchRemoteSession();
+    const normalized = normalizeStatus(remoteStatus);
+    const qrCode = normalized === 'scan_qr_code' ? await fetchQrCode() : null;
+
+    const snapshot: SessionSnapshot = {
+      status: normalized,
+      rawStatus: remoteStatus,
+      qrCode,
     };
 
-    sessions.set(sessionId, {
-      sock,
-      store: storePlaceholder,
-      sessionName,
-      isConnected: false,
-    });
+    await persistSnapshot(snapshot);
 
-    // Listen for auth updates
-    sock.ev.on('creds.update', saveCreds);
-
-    // Handle connection updates
-    sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      if (qr) {
-        // Generate QR code as base64 image
-        const qrCode = await QRCode.toDataURL(qr);
-
-        // Update QR code in database
-        await prisma.whatsAppSession.update({
-          where: { id: sessionId },
-          data: { qrCode },
-        });
-      }
-
-      if (connection === 'open') {
-        // Update session status
-        sessions.get(sessionId).isConnected = true;
-
-        await prisma.whatsAppSession.update({
-          where: { id: sessionId },
-          data: {
-            status: 'connected',
-            qrCode: null,
-          },
-        });
-
-        console.log(`WhatsApp session ${sessionName} connected`);
-      }
-
-      if (connection === 'close') {
-        const shouldReconnect =
-          (lastDisconnect?.error as Boom)?.output?.statusCode !==
-          DisconnectReason.loggedOut;
-
-        console.log(`WhatsApp connection closed for ${sessionName}. Reconnecting: ${shouldReconnect}`);
-
-        if (shouldReconnect) {
-          // Try to reconnect
-          initWhatsApp(sessionId, sessionName);
-        } else {
-          // Update session status
-          sessions.get(sessionId).isConnected = false;
-
-          await prisma.whatsAppSession.update({
-            where: { id: sessionId },
-            data: { status: 'disconnected' },
-          });
-        }
-      }
-    });
-
-    // Generate initial QR code
-    const qrCode = await QRCode.toDataURL('Loading QR code...');
-
-    return { qrCode, success: true };
+    return snapshot;
   } catch (error) {
-    console.error('Error initializing WhatsApp:', error);
-    return { qrCode: '', success: false };
+    console.error('WAHA status fetch failed:', (error as Error).message);
+    const snapshot: SessionSnapshot = {
+      status: 'disconnected',
+      rawStatus: 'ERROR',
+      qrCode: null,
+    };
+    await persistSnapshot(snapshot);
+    return snapshot;
   }
 };
 
-// Get session status
-export const getSessionStatus = async (sessionId: string): Promise<string> => {
-  const session = sessions.get(sessionId);
-
-  if (!session) {
-    return 'not_found';
+export const requestPairingCode = async (phoneNumber: string, method?: string) => {
+  if (!phoneNumber) {
+    throw new Error('phoneNumber is required');
   }
 
-  return session.isConnected ? 'connected' : 'disconnected';
+  const payload: Record<string, string> = {
+    phoneNumber,
+  };
+
+  if (method) {
+    payload.method = method;
+  }
+
+  const response = await wahaClient.post(`/${SESSION_NAME}/auth/request-code`, payload);
+  return response.data ?? { success: true };
 };
 
-// Disconnect session
-export const disconnectSession = async (sessionId: string): Promise<boolean> => {
+export const disconnectSession = async (): Promise<boolean> => {
   try {
-    const session = sessions.get(sessionId);
-
-    if (!session) {
-      return false;
+    try {
+      await wahaClient.post(`/sessions/${SESSION_NAME}/stop`);
+    } catch (err) {
+      const axiosErr = err as AxiosError;
+      if (axiosErr.response?.status !== 404) {
+        throw err;
+      }
     }
 
-    // Logout and close connection
-    await session.sock.logout();
+    const snapshot: SessionSnapshot = {
+      status: 'disconnected',
+      rawStatus: 'STOPPED',
+      qrCode: null,
+    };
 
-    // Remove session
-    sessions.delete(sessionId);
-
+    await persistSnapshot(snapshot);
     return true;
   } catch (error) {
-    console.error('Error disconnecting session:', error);
+    console.error('Error disconnecting WAHA session:', error);
     return false;
   }
 };
 
-// Send WhatsApp message
+const toChatId = (phoneNumber: string): string => {
+  if (!phoneNumber) {
+    throw new Error('phoneNumber is required');
+  }
+
+  const trimmed = phoneNumber.trim();
+  if (trimmed.includes('@')) {
+    return trimmed;
+  }
+
+  const digits = trimmed.replace(/\D/g, '');
+  return `${digits}@c.us`;
+};
+
 export const sendWhatsAppMessage = async (
-  sessionId: string,
+  _sessionId: string,
   phoneNumber: string,
   message: string
 ): Promise<boolean> => {
   try {
-    const session = sessions.get(sessionId);
-
-    if (!session || !session.isConnected) {
-      return false;
+    if (!message) {
+      throw new Error('message is required');
     }
 
-    // Format phone number if needed
-    let jid = phoneNumber;
-    if (!isJidUser(phoneNumber)) {
-      jid = phoneNumber.includes('@c.us') ?
-        phoneNumber :
-        `${phoneNumber.replace(/[^\d]/g, '')}@s.whatsapp.net`;
-    }
-
-    // Send message
-    await session.sock.sendMessage(jid, { text: message });
+    const chatId = toChatId(phoneNumber);
+    await wahaClient.post('/sendText', {
+      session: SESSION_NAME,
+      chatId,
+      text: message,
+      linkPreview: false,
+    });
 
     return true;
   } catch (error) {
-    console.error('Error sending WhatsApp message:', error);
+    const axiosErr = error as AxiosError;
+    const status = axiosErr.response?.status;
+    const errorMsg = axiosErr.response?.data;
+    console.error('Error sending WhatsApp message via WAHA:', status || '', errorMsg || axiosErr.message);
     return false;
   }
+};
+
+export const getSessionQrCode = async (): Promise<string | null> => {
+  return fetchQrCode();
 };

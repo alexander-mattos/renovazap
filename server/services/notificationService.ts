@@ -1,6 +1,5 @@
 import prisma from '../../src/lib/prisma';
 import { sendWhatsAppMessage } from './whatsappService';
-import { forwardSend } from '../routes/baileysProxy';
 import { NotificationData } from '../../src/types';
 
 // Helper to persist a MessageLog
@@ -262,10 +261,8 @@ async function sendNotification(notification: any): Promise<void> {
     // Formatar número para WhatsApp (adicionar código do país se necessário)
     phoneNumber = formatPhoneForWhatsApp(phoneNumber);
 
-  // Enviar mensagem via WhatsApp socket local
-  // Use uma sessão conectada do DB (se existir) em vez de depender de notification.session
-  const activeSession = await prisma.whatsAppSession.findFirst({ where: { status: 'connected' } });
-  const sent = activeSession ? await sendWhatsAppMessage(activeSession.id, phoneNumber, notification.message) : false;
+  // Enviar mensagem via WAHA (sessão default)
+  const sent = await sendWhatsAppMessage('default', phoneNumber, notification.message);
 
     if (sent) {
       // Marcar como enviada
@@ -282,52 +279,9 @@ async function sendNotification(notification: any): Promise<void> {
 
       console.log(`✅ Notificação ${notification.id} enviada com sucesso`);
     } else {
-      // Local socket failed — tentar fallback via proxy (external Baileys API)
-      const jid = phoneNumber.includes('@') ? phoneNumber : `${phoneNumber.replace(/[^\d]/g, '')}@s.whatsapp.net`;
-      const body = { jid, message: notification.message };
-      const baileyToken = process.env.BAILEYS_TOKEN;
-
-      // Try with retries/backoff
-      const maxAttempts = 3;
-      let attempt = 0;
-      let proxySuccess = false;
-      let lastError: any = null;
-
-      while (attempt < maxAttempts && !proxySuccess) {
-        attempt++;
-        try {
-          const tokenHeader = baileyToken ? (baileyToken.startsWith('Bearer ') ? baileyToken : `Bearer ${baileyToken}`) : undefined;
-          const r = await forwardSend(body, tokenHeader, 20000 + attempt * 2000);
-          // consider success when external API returns 200 and ok:true or status 200
-          if (r && (r.status === 200 || r.status === 201)) {
-            proxySuccess = true;
-            await prisma.notification.update({ where: { id: notification.id }, data: { status: 'sent', sentAt: new Date() } });
-            await logMessageAttempt(notification.id, 'sent', `Sent via proxy on attempt ${attempt}: ${JSON.stringify(r.data).slice(0,200)}`);
-            console.log(`✅ Notificação ${notification.id} enviada via proxy (attempt ${attempt})`);
-            break;
-          } else {
-            lastError = r && r.data ? r.data : `Unexpected response status ${r?.status}`;
-            await logMessageAttempt(notification.id, 'failed', `Proxy attempt ${attempt} returned ${r?.status}`);
-          }
-        } catch (err: any) {
-          lastError = err;
-          console.error(`Proxy send attempt ${attempt} error:`, err?.message || err);
-          await logMessageAttempt(notification.id, 'failed', `Proxy attempt ${attempt} error: ${err?.message || JSON.stringify(err)}`);
-        }
-
-        // backoff
-        if (!proxySuccess && attempt < maxAttempts) {
-          const waitMs = 1000 * attempt;
-          await new Promise(res => setTimeout(res, waitMs));
-        }
-      }
-
-      if (!proxySuccess) {
-        // Mark as failed after retries
-        await prisma.notification.update({ where: { id: notification.id }, data: { status: 'failed', sentAt: new Date() } });
-        await logMessageAttempt(notification.id, 'failed', `All proxy attempts failed. Last error: ${String(lastError)}`);
-        console.error(`❌ Falha ao enviar notificação ${notification.id} após ${maxAttempts} tentativas.`, lastError);
-      }
+      await prisma.notification.update({ where: { id: notification.id }, data: { status: 'failed', sentAt: new Date() } });
+      await logMessageAttempt(notification.id, 'failed', 'WAHA session not connected or message rejected');
+      console.error(`❌ Falha ao enviar notificação ${notification.id}. Sessão WAHA possivelmente desconectada.`);
     }
 
   } catch (error) {
@@ -501,12 +455,6 @@ export async function sendNotificationNow(notificationId: string): Promise<void>
 // Process pending notifications
 export const processPendingNotifications = async (): Promise<void> => {
   try {
-    // Get active WhatsApp session
-    const session = await prisma.whatsAppSession.findFirst({
-      where: { status: 'connected' },
-    });
-
-    // Get notifications scheduled for today or earlier
     const now = new Date();
     const notifications = await prisma.notification.findMany({
       where: {
@@ -528,79 +476,43 @@ export const processPendingNotifications = async (): Promise<void> => {
 
     for (const notification of notifications) {
       try {
-        // Determine phone number (prefer policyholderPhone, otherwise derive from user's email)
-        let phoneNumber = notification.policy.policyholderPhone || (notification.policy.user.email ? (notification.policy.user.email.replace('@', '').replace(/\./g, '') + '@c.us') : '');
+        let phoneNumber = notification.policy.policyholderPhone || notification.policy.user.phone;
 
-        // Format JID for WhatsApp
-        const jid = phoneNumber.includes('@') ? phoneNumber : `${formatPhoneForWhatsApp(phoneNumber)}@s.whatsapp.net`;
-
-        let success = false;
-
-        if (session) {
-          // Send using local socket
-          success = await sendWhatsAppMessage(session.id, jid, notification.message);
-        } else {
-          // Fallback: send via the server proxy helper
-          const BAILEYS_TOKEN = process.env.BAILEYS_TOKEN;
-
-          if (!BAILEYS_TOKEN) {
-            console.warn('No BAILEYS_TOKEN provided; cannot send via external API');
-            success = false;
-          } else {
-            const body = { jid, message: notification.message };
-            const tokenHeader = BAILEYS_TOKEN.startsWith('Bearer ') ? BAILEYS_TOKEN : `Bearer ${BAILEYS_TOKEN}`;
-
-            // Retry loop with exponential/backoff delays
-            const maxAttempts = 3;
-            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-              try {
-                const timeoutMs = attempt === 1 ? 20000 : 30000; // longer timeout for retries
-                const res = await forwardSend(body, tokenHeader, timeoutMs);
-                success = res.status >= 200 && res.status < 300;
-                await logMessageAttempt(notification.id, success ? 'sent' : 'failed', `External API status ${res.status} - ${JSON.stringify(res.data)}`);
-                if (success) break;
-              } catch (err: any) {
-                const respBody = err?.response?.data ? JSON.stringify(err.response.data) : undefined;
-                console.error(`Attempt ${attempt} - Error calling external Baileys proxy helper:`, err?.message || err, respBody ? `response: ${respBody}` : '');
-                await logMessageAttempt(notification.id, 'failed', `Attempt ${attempt} - External API error: ${err?.message || String(err)} ${respBody ? ' - response: ' + respBody : ''}`);
-                success = false;
-                if (attempt < maxAttempts) {
-                  const backoff = attempt * 1500;
-                  await new Promise(r => setTimeout(r, backoff));
-                }
-              }
-            }
-          }
+        if (!phoneNumber) {
+          console.warn(`Notification ${notification.id} skipped: missing phone number`);
+          await logMessageAttempt(notification.id, 'failed', 'Missing phone number');
+          await prisma.notification.update({
+            where: { id: notification.id },
+            data: { status: 'failed' },
+          });
+          continue;
         }
 
-        // Update notification status
+        phoneNumber = formatPhoneForWhatsApp(phoneNumber);
+        const sent = await sendWhatsAppMessage('default', phoneNumber, notification.message);
+
         await prisma.notification.update({
           where: { id: notification.id },
           data: {
-            status: success ? 'sent' : 'failed',
-            sentAt: success ? now : undefined,
+            status: sent ? 'sent' : 'failed',
+            sentAt: sent ? new Date() : undefined,
           },
         });
 
-        // If sent using socket, log that as well
-        if (session && success) {
-          await logMessageAttempt(notification.id, 'sent', 'Sent via WhatsApp socket');
-        } else if (session && !success) {
-          await logMessageAttempt(notification.id, 'failed', 'sendWhatsAppMessage returned false');
-        }
+        await logMessageAttempt(
+          notification.id,
+          sent ? 'sent' : 'failed',
+          sent ? 'Sent via WAHA default session' : 'WAHA session rejected message'
+        );
 
-        // Avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 1000));
       } catch (error) {
         console.error(`Error sending notification ${notification.id}:`, error);
-
-        // Mark as failed
         await prisma.notification.update({
           where: { id: notification.id },
-          data: {
-            status: 'failed',
-          },
+          data: { status: 'failed' },
         });
+        await logMessageAttempt(notification.id, 'failed', `Unhandled error: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   } catch (error) {
@@ -612,17 +524,6 @@ export const processPendingNotifications = async (): Promise<void> => {
   // Testable variant that accepts a sender function (useful for E2E tests without real WhatsApp)
   export const processPendingNotificationsWithSender = async (sender: (sessionId: string, phone: string, message: string) => Promise<boolean>): Promise<void> => {
     try {
-      // Get active WhatsApp session
-      const session = await prisma.whatsAppSession.findFirst({
-        where: { status: 'connected' },
-      });
-
-      if (!session) {
-        console.log('No active WhatsApp session found for sending notifications');
-        return;
-      }
-
-      // Get notifications scheduled for today or earlier
       const now = new Date();
       const notifications = await prisma.notification.findMany({
         where: {
@@ -644,9 +545,17 @@ export const processPendingNotifications = async (): Promise<void> => {
 
       for (const notification of notifications) {
         try {
-          const phoneNumber = notification.policy.user.email.replace('@', '').replace(/\./g, '') + '@c.us';
+          let phoneNumber = notification.policy.policyholderPhone || notification.policy.user.phone;
 
-          const success = await sender(session.id, phoneNumber, notification.message);
+          if (!phoneNumber) {
+            console.warn(`Notification ${notification.id} skipped: missing phone number`);
+            await logMessageAttempt(notification.id, 'failed', 'Missing phone number');
+            await prisma.notification.update({ where: { id: notification.id }, data: { status: 'failed' } });
+            continue;
+          }
+
+          phoneNumber = formatPhoneForWhatsApp(phoneNumber);
+          const success = await sender('default', phoneNumber, notification.message);
 
           await prisma.notification.update({
             where: { id: notification.id },
@@ -656,7 +565,6 @@ export const processPendingNotifications = async (): Promise<void> => {
             },
           });
 
-          // Log attempt
           await logMessageAttempt(notification.id, success ? 'sent' : 'failed', success ? 'stubbed sender' : 'stubbed sender failed');
 
           await new Promise(resolve => setTimeout(resolve, 1000));

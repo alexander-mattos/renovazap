@@ -27,11 +27,9 @@
   "author": "RenovaZap Team",
   "license": "ISC",
   "dependencies": {
-    "@hapi/boom": "^10.0.1",
     "@prisma/client": "^6.17.1",
     "@prisma/extension-accelerate": "^2.0.2",
     "axios": "^1.6.0",
-    "baileys": "^6.7.18",
     "bcrypt": "^5.1.1",
     "caniuse-lite": "^1.0.30001720",
     "concurrently": "^9.1.2",
